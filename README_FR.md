@@ -74,6 +74,8 @@ prévient le pont via un named pipe local.
 
 ```
 traffic-light.ps1              le script pont/client (PowerShell)
+traffic-light-launcher.vbs     lance le pont sans fenêtre console
+traffic-light-task.xml         tâche planifiée : démarrage au logon et en sortie de veille
 settings-hooks.json            entrées de hooks à fusionner dans le settings.json de Claude Code
 traffic_light/traffic_light.ino   firmware Arduino Nano (FastLED)
 3D/                            STL du boîtier + guide de montage

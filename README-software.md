@@ -91,7 +91,8 @@ current frame.
 
 ## 3. Installing the script
 
-Copy `traffic-light.ps1` into `%USERPROFILE%\.claude\hooks\`.
+Copy `traffic-light.ps1` and `traffic-light-launcher.vbs` into
+`%USERPROFILE%\.claude\hooks\`.
 
 Manual test, in two windows:
 
@@ -107,15 +108,31 @@ The bridge finds the COM port on its own, by the USB identifier of the
 converter chip (CH340, CH9102, FTDI, or the official Arduino chip). No COM
 number to configure, and it keeps working if you switch USB ports.
 
-Auto-start at logon:
+Auto-start — import the task definition shipped with the project:
 
 ```
-schtasks /Create /TN "Claude Code Traffic Light" /SC ONLOGON /RL LIMITED /F /TR "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"%USERPROFILE%\.claude\hooks\traffic-light.ps1`""
+schtasks /Create /TN "Claude Code Traffic Light" /XML "traffic-light-task.xml" /F
 ```
 
-(One line, PowerShell syntax — the `` ` `` before the inner quotes is
-PowerShell's escape character. Don't split it with `^`, that's cmd.exe
-syntax and fails in PowerShell.)
+What `traffic-light-task.xml` sets up, and why:
+
+- **Two triggers**: at logon (30 s delay) and on resume from sleep
+  (`Power-Troubleshooter` event 1). A logon-only task leaves the light dead
+  after a sleep that killed the bridge.
+- **Retry every 5 min for 2 h** after each trigger, plus restart on failure.
+  On managed machines an EDR (SentinelOne seen in practice) can kill the
+  bridge while it's still initializing at boot; a one-shot launch never
+  comes back. Redundant launches are harmless: the bridge holds a global
+  mutex and a second instance exits immediately.
+- **No execution time limit** (`schtasks` defaults to 72 h, which kills a
+  resident process).
+- **Launched through `wscript.exe` + `traffic-light-launcher.vbs`**, not
+  `powershell.exe -WindowStyle Hidden` directly: the latter still flashes a
+  console for a split second, which becomes visible every 5 min with the
+  retry above.
+
+The task only fires on the next trigger: start the bridge by hand once after
+importing it.
 
 ## 4. Hooks
 
@@ -146,6 +163,10 @@ That's what used to force hardcoding the path.)
 `PostToolUse` matters: it's what switches back to orange once you've granted
 a permission, otherwise red would stay lit until `Stop`.
 
+Claude Code has no hook for a *denied* or dismissed permission prompt, and
+`Stop` isn't guaranteed to follow promptly. So the bridge ignores a
+`permission` state older than 90 s (`$PermissionStaleSec`).
+
 Check with `claude --debug` that the hooks fire, or `/hooks` to list the
 loaded configuration.
 
@@ -154,8 +175,16 @@ loaded configuration.
 **The board resets on every colour change.** The bridge isn't running and the
 client has nobody to talk to — or some other program is holding the port.
 Check that `traffic-light.ps1` with no argument is actually running. The
-scheduled task is set to `ONLOGON`: it doesn't start on its own right after
-being created, run it by hand once first.
+scheduled task doesn't start on its own right after being created, run it by
+hand once first.
+
+**The light dies after a reboot or a sleep.** Check the task's last result
+with `schtasks /Query /TN "Claude Code Traffic Light" /V /FO LIST`.
+`-1073741510` (`0xC000013A`) means the process was killed from outside —
+typically an EDR at boot. The 5-min retry in `traffic-light-task.xml` covers
+it; if it keeps happening, ask your security team for an exclusion on the
+script. If the task still shows a single "at logon" trigger, the XML wasn't
+imported.
 
 **"Access denied" on COM3 when launching `traffic-light.ps1` with no
 argument.** Some other program already holds the port — the bridge can only
@@ -174,8 +203,12 @@ If the bridge fails to open the port, it still tries to create the local
 named pipe, which can surface a second, unrelated error
 (`BeginWaitForConnection`) — ignore it, it's a side effect of the first one.
 
-**Red stays lit even though everything is done.** An instance was killed
-mid-job. The bridge forgets it once its process disappears, but if the key in
+A second bridge started while one is already running exits on its own
+("another bridge instance is already running") — no conflict on the pipe.
+
+**Red stays lit even though everything is done.** If you just denied a
+permission prompt, it clears by itself after 90 s. Otherwise an instance was
+killed mid-job. The bridge forgets it once its process disappears, but if the key in
 use is a `session_id` (no PID found), you have to wait out the 20-minute
 expiry. The bridge console logs every instance that disappears.
 

@@ -69,6 +69,8 @@ tells the bridge what happened over a local named pipe.
 
 ```
 traffic-light.ps1              the bridge/client script (PowerShell)
+traffic-light-launcher.vbs     starts the bridge with no console window
+traffic-light-task.xml         scheduled task: auto-start at logon and on resume from sleep
 settings-hooks.json            hook entries to merge into Claude Code's settings.json
 traffic_light/traffic_light.ino   Arduino Nano firmware (FastLED)
 3D/                            enclosure STLs + assembly guide

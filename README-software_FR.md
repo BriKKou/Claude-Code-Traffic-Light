@@ -92,7 +92,8 @@ chaque chiffre valant `0` éteint, `1` allumé, `2` clignotant, `3` veille.
 
 ## 3. Installation du script
 
-Copier `traffic-light.ps1` dans `%USERPROFILE%\.claude\hooks\`.
+Copier `traffic-light.ps1` et `traffic-light-launcher.vbs` dans
+`%USERPROFILE%\.claude\hooks\`.
 
 Test manuel, dans deux fenêtres :
 
@@ -109,15 +110,31 @@ Le pont détecte le port COM tout seul, par identifiant USB du convertisseur
 (CH340, CH9102, FTDI ou puce Arduino). Aucun numéro de COM à renseigner, et ça
 continue de marcher si tu changes de prise USB.
 
-Lancement automatique à l'ouverture de session :
+Lancement automatique — importer la définition de tâche fournie :
 
 ```
-schtasks /Create /TN "Claude Code Traffic Light" /SC ONLOGON /RL LIMITED /F /TR "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"%USERPROFILE%\.claude\hooks\traffic-light.ps1`""
+schtasks /Create /TN "Claude Code Traffic Light" /XML "traffic-light-task.xml" /F
 ```
 
-(Une seule ligne, syntaxe PowerShell — le `` ` `` avant les guillemets
-internes est le caractère d'échappement de PowerShell. Ne pas la couper avec
-`^`, c'est de la syntaxe cmd.exe qui échoue sous PowerShell.)
+Ce que configure `traffic-light-task.xml`, et pourquoi :
+
+- **Deux déclencheurs** : à l'ouverture de session (délai 30 s) et à la
+  sortie de veille (événement `Power-Troubleshooter` 1). Une tâche au logon
+  seul laisse le feu éteint après une veille qui a tué le pont.
+- **Relance toutes les 5 min pendant 2 h** après chaque déclencheur, plus
+  redémarrage en cas d'échec. Sur un poste géré, un EDR (SentinelOne constaté
+  en pratique) peut tuer le pont pendant sa propre initialisation au boot ;
+  un lancement unique ne revient jamais. Les lancements en trop sont sans
+  effet : le pont tient un mutex global et une seconde instance sort aussitôt.
+- **Pas de limite de durée d'exécution** (`schtasks` met 72 h par défaut, ce
+  qui tue un processus résident).
+- **Lancement via `wscript.exe` + `traffic-light-launcher.vbs`**, et non
+  `powershell.exe -WindowStyle Hidden` directement : ce dernier fait quand
+  même clignoter une console une fraction de seconde, visible toutes les 5 min
+  avec la relance ci-dessus.
+
+La tâche ne se déclenche qu'au prochain événement : lancer le pont à la main
+une fois après l'import.
 
 ## 4. Hooks
 
@@ -148,6 +165,10 @@ cmd. C'est ce qui forçait à écrire le chemin en dur avant.)
 `PostToolUse` compte : c'est lui qui repasse à l'orange une fois que tu as
 accordé une permission, sinon le rouge resterait allumé jusqu'au `Stop`.
 
+Claude Code n'a aucun hook pour une permission *refusée* ou ignorée, et le
+`Stop` n'arrive pas forcément vite. Le pont ignore donc un état `permission`
+de plus de 90 s (`$PermissionStaleSec`).
+
 Vérifier avec `claude --debug` que les hooks se déclenchent, ou `/hooks` pour
 lister la configuration chargée.
 
@@ -156,8 +177,17 @@ lister la configuration chargée.
 **La carte redémarre à chaque changement de couleur.** Le pont ne tourne pas et
 le client n'a personne à qui parler — ou un autre logiciel occupe le port.
 Vérifie que `traffic-light.ps1` sans argument est bien lancé. La tâche
-planifiée est en `ONLOGON` : elle ne démarre pas toute seule après création,
-lance-la à la main une première fois.
+planifiée ne démarre pas toute seule après création, lance-la à la main une
+première fois.
+
+**Le feu s'éteint après un redémarrage ou une veille.** Regarde le dernier
+résultat de la tâche avec
+`schtasks /Query /TN "Claude Code Traffic Light" /V /FO LIST`.
+`-1073741510` (`0xC000013A`) signifie que le processus a été tué de
+l'extérieur — typiquement un EDR au boot. La relance toutes les 5 min de
+`traffic-light-task.xml` le couvre ; si ça persiste, demande une exclusion
+sur le script à ton équipe sécurité. Si la tâche n'affiche qu'un seul
+déclencheur « à l'ouverture de session », le XML n'a pas été importé.
 
 **« Accès refusé » sur COM3 en lançant `traffic-light.ps1` sans argument.** Un
 autre programme tient déjà le port — le pont ne peut avoir qu'un seul
@@ -176,8 +206,12 @@ Si le pont échoue à l'ouverture du port, il essaie quand même de créer le
 named pipe local, ce qui peut faire remonter une seconde erreur sans rapport
 (`BeginWaitForConnection`) — ignore-la, c'est une conséquence de la première.
 
-**Le rouge reste allumé alors que tout est fini.** Une instance a été tuée en
-plein travail. Le pont l'oublie quand son processus disparaît, mais si la clé
+Un second pont lancé alors qu'un premier tourne déjà sort tout seul
+(« another bridge instance is already running ») — pas de conflit sur le pipe.
+
+**Le rouge reste allumé alors que tout est fini.** Si tu viens de refuser une
+permission, il s'éteint seul au bout de 90 s. Sinon, une instance a été tuée
+en plein travail. Le pont l'oublie quand son processus disparaît, mais si la clé
 utilisée est un `session_id` (PID introuvable), il faut attendre les 20 minutes
 de péremption. La console du pont journalise chaque instance disparue.
 

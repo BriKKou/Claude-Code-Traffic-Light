@@ -25,6 +25,8 @@ Files in this folder:
 |---|---|
 | `README.md` / `README_FR.md` | Project overview: features, components, where to start (EN / FR) |
 | `traffic-light.ps1` | The one script — bridge mode (no args) and client mode (with an arg) |
+| `traffic-light-launcher.vbs` | Starts the bridge with no console window (used by the scheduled task) |
+| `traffic-light-task.xml` | Scheduled task definition: logon + resume-from-sleep triggers, retry, no time limit |
 | `settings-hooks.json` | The hook entries to merge into the user's Claude Code settings |
 | `traffic_light/traffic_light.ino` | Arduino Nano firmware (needs the FastLED library) |
 | `README-software.md` / `README-software_FR.md` | Full software reference and troubleshooting (EN / FR) |
@@ -48,6 +50,7 @@ Files in this folder:
 $hooksDir = "$env:USERPROFILE\.claude\hooks"
 New-Item -ItemType Directory -Force -Path $hooksDir | Out-Null
 Copy-Item "traffic-light.ps1" "$hooksDir\traffic-light.ps1" -Force
+Copy-Item "traffic-light-launcher.vbs" "$hooksDir\traffic-light-launcher.vbs" -Force
 ```
 
 ## 3. Merge the hooks into settings.json
@@ -107,25 +110,27 @@ window 1 fails with "Access denied" on the COM port, something else already
 holds it (a previous bridge, or the Arduino Serial Monitor) — see
 README-software.md's Troubleshooting section.
 
-## 6. Auto-start at logon
+## 6. Auto-start (logon and resume from sleep)
 
 This is a system-level change (registers a scheduled task) that you may be
-blocked from running directly by the permission classifier. If so, give the
-human this exact command to run themselves rather than trying to work around
-the block:
+blocked from running directly ("Access denied" from `schtasks` or
+`Register-ScheduledTask`). If so, give the human these exact commands to run
+themselves, from this folder, rather than trying to work around the block:
 
 ```
-schtasks /Create /TN "Claude Code Traffic Light" /SC ONLOGON /RL LIMITED /F /TR "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"%USERPROFILE%\.claude\hooks\traffic-light.ps1`""
+schtasks /Delete /TN "Claude Code Traffic Light" /F
+schtasks /Create /TN "Claude Code Traffic Light" /XML "traffic-light-task.xml" /F
 ```
 
-(This is PowerShell syntax — the command is one line, and `` ` `` before the
-inner quotes is PowerShell's escape character, not a typo. Don't split it
-across lines with `^`, that's cmd.exe syntax and fails in PowerShell.)
+(The `/Delete` fails harmlessly if the task doesn't exist yet.) Use the XML,
+not a hand-built `schtasks /SC ONLOGON` one-liner: it carries the resume
+trigger, the 5-min retry, the unlimited run time and the VBS launcher — see
+README-software.md, section 3, for why each one is needed.
 
-Note in the README: this task doesn't start itself right after being
-created — it only fires on the *next* logon. Start the bridge by hand once
-after creating it (as in step 5, but as a hidden background process) so it's
-running for the current session too.
+The task doesn't start itself right after being created — it only fires on
+the next logon/resume. Start the bridge by hand once after importing it (as
+in step 5, but as a hidden background process) so it's running for the
+current session too.
 
 ## 7. Verify hooks actually fire
 
