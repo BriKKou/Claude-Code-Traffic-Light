@@ -32,6 +32,13 @@ $IdleAnimMin   = 4       # then idle animation (white sweep, firmware side), bef
 $StaleMinutes  = 20      # slot with no update and no live PID -> forgotten
 $RefreshSec    = 30      # periodic re-send of the frame
 
+# Claude Code has no hook that fires when a permission prompt is denied or
+# dismissed (only PermissionRequest, firing when it's *asked*). A denial can
+# leave a slot stuck on 'permission' until Stop eventually fires, which isn't
+# guaranteed to happen promptly. So a 'permission' state this old is treated
+# as resolved rather than waited out.
+$PermissionStaleSec = 90
+
 # =========================== CLIENT MODE ===========================
 
 if ($State) {
@@ -182,7 +189,9 @@ function Get-Frame {
 
     foreach ($s in $script:slots.Values) {
         switch ($s.State) {
-            'permission' { $permission = $true }
+            'permission' {
+                if (((Get-Date) - $s.Seen).TotalSeconds -lt $PermissionStaleSec) { $permission = $true }
+            }
             'waiting'    { $waiting    = $true }
             'working'    { $working    = $true }
         }
@@ -244,6 +253,15 @@ function New-Pipe {
         [System.IO.Pipes.PipeOptions]::Asynchronous)
 }
 
+# Only one bridge may hold the named pipe. A second instance (e.g. a
+# resume-from-sleep trigger racing a bridge that survived the sleep)
+# exits quietly instead of crashing on the pipe's single-instance limit.
+$script:mutex = New-Object System.Threading.Mutex($false, 'Global\ClaudeTrafficLightBridge')
+if (-not $script:mutex.WaitOne(0)) {
+    Write-Log "another bridge instance is already running, exiting"
+    exit 0
+}
+
 Write-Log "bridge started, pipe \\.\pipe\$PipeName"
 Connect-Board | Out-Null
 
@@ -272,6 +290,11 @@ while ($true) {
 
     } catch {
         Write-Log "error: $($_.Exception.Message)"
+        # The port object can be left in a bad state (e.g. the USB device
+        # dropped and re-enumerated during a long sleep). Discard it so
+        # Connect-Board reopens it cleanly on the next tick.
+        try { $script:port.Close() } catch { }
+        $script:port = $null
         try { $pipe.Dispose() } catch { }
         Start-Sleep -Milliseconds 300
         $pipe  = New-Pipe
